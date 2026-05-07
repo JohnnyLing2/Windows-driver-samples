@@ -867,16 +867,9 @@ DriverEntry(
       goto Exit;
    }
 
-   if ((configInspectRemoteAddrV4 == NULL) && 
-       (configInspectRemoteAddrV6 == NULL))
-   {
-      status = STATUS_DEVICE_CONFIGURATION_ERROR;
-      goto Exit;
-   }
-
-   status = FwpsInjectionHandleCreate(
-               AF_UNSPEC,
-               FWPS_INJECTION_TYPE_TRANSPORT,
+    status = FwpsInjectionHandleCreate(
+                AF_UNSPEC,
+                FWPS_INJECTION_TYPE_TRANSPORT,
                &gInjectionHandle
                );
 
