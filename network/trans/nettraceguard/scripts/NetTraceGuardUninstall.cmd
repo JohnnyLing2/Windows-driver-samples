@@ -3,6 +3,7 @@ setlocal
 
 echo Stopping service
 sc stop inspect >nul 2>&1
+sc stop nettraceguard >nul 2>&1
 
 echo Removing driver package by INF
 pnputil /delete-driver nettraceguard.inf /uninstall /force >nul 2>&1
