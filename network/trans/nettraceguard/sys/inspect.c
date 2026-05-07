@@ -99,7 +99,7 @@ TLInspectALEConnectClassify(
    This is the classifyFn function for the ALE connect (v4 and v6) callout.
    For an initial classify (where the FWP_CONDITION_FLAG_IS_REAUTHORIZE flag
    is not set), it is queued to the connection list for inspection by the
-   worker thread. For re-auth, we first check if it is triggered by an ealier
+   worker thread. For re-auth, we first check if it is triggered by an earlier
    FwpsCompleteOperation call by looking for an pended connect that has been
    inspected. If found, we remove it from the connect list and return the 
    inspection result; otherwise we can conclude that the re-auth is triggered 
@@ -317,7 +317,7 @@ TLInspectALEConnectClassify(
                {
                   //
                   // Now the outbound connection has been authorized. If the
-                  // pended connect has a net buffer list in it, we need it
+                   // pended connect has a net buffer list in it, we need to
                   // morph it into a data packet and queue it to the packet
                   // queue for send injecition.
                   //
@@ -752,7 +752,7 @@ TLInspectTransportClassify(
 /* ++
 
    This is the classifyFn function for the Transport (v4 and v6) callout.
-   packets (inbound or outbound) are ueued to the packet queue to be processed 
+   packets (inbound or outbound) are queued to the packet queue to be processed 
    by the worker thread.
 
 -- */

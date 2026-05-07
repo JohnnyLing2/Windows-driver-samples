@@ -116,17 +116,17 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <ResourceCompile>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630;POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
     </ResourceCompile>
     <ClCompile>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630;POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
       <ExceptionHandling>
       </ExceptionHandling>
     </ClCompile>
     <Midl>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630;POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
     </Midl>
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies);$(DDK_LIB_PATH)\ndis.lib;$(DDK_LIB_PATH)\wdmsec.lib;$(DDK_LIB_PATH)\fwpkclnt.lib;uuid.lib</AdditionalDependencies>
@@ -160,7 +160,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <ResourceCompile>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);BINARY_COMPATIBLE=0;NT;UNICODE;_UNICODE;NDIS630;NDIS_SUPPORT_NDIS630;POOL_NX_OPTIN_AUTO</PreprocessorDefinitions>
     </ResourceCompile>
     <ClCompile>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH)</AdditionalIncludeDirectories>
