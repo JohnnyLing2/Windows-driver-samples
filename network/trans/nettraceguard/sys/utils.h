@@ -120,9 +120,9 @@ GetDeliveryInterfaceIndexesForLayer(
    _Out_ UINT* subInterfaceIndexIndex
    )
 {
-   *interfaceIndexIndex = 0;
+   *interfaceIndexIndex = UINT_MAX;
 
-   *subInterfaceIndexIndex = 0;
+   *subInterfaceIndexIndex = UINT_MAX;
 
    switch (layerId)
    {
@@ -156,15 +156,27 @@ GetDeliveryInterfaceIndexesForLayer(
       *subInterfaceIndexIndex = 
          FWPS_FIELD_INBOUND_TRANSPORT_V4_SUB_INTERFACE_INDEX;
       break;
-   case FWPS_LAYER_INBOUND_TRANSPORT_V6:
-      *interfaceIndexIndex = 
-         FWPS_FIELD_INBOUND_TRANSPORT_V6_INTERFACE_INDEX;
-      *subInterfaceIndexIndex = 
-         FWPS_FIELD_INBOUND_TRANSPORT_V6_SUB_INTERFACE_INDEX;
-      break;
-   default:
-      NT_ASSERT(0);
-      break;
+    case FWPS_LAYER_INBOUND_TRANSPORT_V6:
+       *interfaceIndexIndex = 
+          FWPS_FIELD_INBOUND_TRANSPORT_V6_INTERFACE_INDEX;
+       *subInterfaceIndexIndex = 
+          FWPS_FIELD_INBOUND_TRANSPORT_V6_SUB_INTERFACE_INDEX;
+       break;
+    case FWPS_LAYER_OUTBOUND_TRANSPORT_V4:
+       *interfaceIndexIndex =
+          FWPS_FIELD_OUTBOUND_TRANSPORT_V4_INTERFACE_INDEX;
+       *subInterfaceIndexIndex =
+          FWPS_FIELD_OUTBOUND_TRANSPORT_V4_SUB_INTERFACE_INDEX;
+       break;
+    case FWPS_LAYER_OUTBOUND_TRANSPORT_V6:
+       *interfaceIndexIndex =
+          FWPS_FIELD_OUTBOUND_TRANSPORT_V6_INTERFACE_INDEX;
+       *subInterfaceIndexIndex =
+          FWPS_FIELD_OUTBOUND_TRANSPORT_V6_SUB_INTERFACE_INDEX;
+       break;
+    default:
+       NT_ASSERT(0);
+       break;
    }
 }
 

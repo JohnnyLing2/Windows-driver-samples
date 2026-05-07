@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://windows-driver-samples/network/trans/nettraceguard/config/nettraceguard-config.schema.json",
+  "title": "NetTraceGuard Configuration",
+  "type": "object",
+  "required": [
+    "adapterIfIndex",
+    "windowSeconds",
+    "icmpEchoThreshold",
+    "ddosAggregatePpsThreshold",
+    "ddosPerSourcePpsThreshold",
+    "ddosFanInThreshold",
+    "cooldownSeconds",
+    "failMode"
+  ],
+  "properties": {
+    "adapterIfIndex": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Windows interface index. 0 means all adapters."
+    },
+    "adapterLuid": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional NET_LUID numeric value for adapter identity continuity."
+    },
+    "windowSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 600
+    },
+    "icmpEchoThreshold": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ddosAggregatePpsThreshold": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ddosPerSourcePpsThreshold": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ddosFanInThreshold": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cooldownSeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600
+    },
+    "failMode": {
+      "type": "string",
+      "enum": ["permit", "block"]
+    }
+  },
+  "additionalProperties": false
+}

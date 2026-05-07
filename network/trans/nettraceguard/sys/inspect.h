@@ -102,6 +102,8 @@ typedef struct TL_INSPECT_PENDED_PACKET_
 // Shared global data.
 //
 extern BOOLEAN configPermitTraffic;
+extern ULONG configInspectIfIndex;
+extern UINT64 configInspectAdapterLuid;
 
 extern HANDLE gInjectionHandle;
 

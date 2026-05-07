@@ -37,6 +37,36 @@ Environment:
 #include "inspect.h"
 #include "utils.h"
 
+static
+BOOLEAN
+TLInspectAdapterMatches(
+   _In_ const FWPS_INCOMING_VALUES* inFixedValues
+   )
+{
+   UINT interfaceIndexIndex = UINT_MAX;
+   UINT subInterfaceIndexIndex = UINT_MAX;
+   UINT ifIndex;
+
+   if (configInspectIfIndex == 0)
+   {
+      return TRUE;
+   }
+
+   GetDeliveryInterfaceIndexesForLayer(
+      inFixedValues->layerId,
+      &interfaceIndexIndex,
+      &subInterfaceIndexIndex
+      );
+
+   if (interfaceIndexIndex == UINT_MAX)
+   {
+      return TRUE;
+   }
+
+   ifIndex = inFixedValues->incomingValue[interfaceIndexIndex].value.uint32;
+   return ifIndex == configInspectIfIndex;
+}
+
 #if(NTDDI_VERSION >= NTDDI_WIN7)
 
 void
@@ -102,6 +132,16 @@ TLInspectALEConnectClassify(
    //
    if ((classifyOut->rights & FWPS_RIGHT_ACTION_WRITE) == 0)
    {
+      goto Exit;
+   }
+
+   if (!TLInspectAdapterMatches(inFixedValues))
+   {
+      classifyOut->actionType = FWP_ACTION_PERMIT;
+      if (filter->flags & FWPS_FILTER_FLAG_CLEAR_ACTION_RIGHT)
+      {
+         classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+      }
       goto Exit;
    }
 
@@ -474,8 +514,18 @@ TLInspectALERecvAcceptClassify(
       goto Exit;
    }
 
-  NT_ASSERT(layerData != NULL);
-  _Analysis_assume_(layerData != NULL);
+   if (!TLInspectAdapterMatches(inFixedValues))
+   {
+      classifyOut->actionType = FWP_ACTION_PERMIT;
+      if (filter->flags & FWPS_FILTER_FLAG_CLEAR_ACTION_RIGHT)
+      {
+         classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+      }
+      goto Exit;
+   }
+
+   NT_ASSERT(layerData != NULL);
+   _Analysis_assume_(layerData != NULL);
 
    //
    // We don't re-inspect packets that we've inspected earlier.
@@ -732,8 +782,18 @@ TLInspectTransportClassify(
       goto Exit;
    }
 
-  NT_ASSERT(layerData != NULL);
-  _Analysis_assume_(layerData != NULL);
+   if (!TLInspectAdapterMatches(inFixedValues))
+   {
+      classifyOut->actionType = FWP_ACTION_PERMIT;
+      if (filter->flags & FWPS_FILTER_FLAG_CLEAR_ACTION_RIGHT)
+      {
+         classifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+      }
+      goto Exit;
+   }
+
+   NT_ASSERT(layerData != NULL);
+   _Analysis_assume_(layerData != NULL);
 
    //
    // We don't re-inspect packets that we've inspected earlier.

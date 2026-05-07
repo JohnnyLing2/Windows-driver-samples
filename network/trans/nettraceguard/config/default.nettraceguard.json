@@ -1,0 +1,11 @@
+{
+  "adapterIfIndex": 0,
+  "adapterLuid": 0,
+  "windowSeconds": 10,
+  "icmpEchoThreshold": 10,
+  "ddosAggregatePpsThreshold": 30,
+  "ddosPerSourcePpsThreshold": 10,
+  "ddosFanInThreshold": 8,
+  "cooldownSeconds": 15,
+  "failMode": "permit"
+}

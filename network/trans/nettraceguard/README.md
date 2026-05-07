@@ -1,6 +1,6 @@
 ---
 page_type: sample
-description: "Demonstrates the traffic inspection capabilities of the Windows Filtering Platform (WFP)."
+description: "NetTraceGuard sample combines a WFP kernel callout and user-mode analyzer for adapter-scoped threat monitoring."
 languages:
 - cpp
 products:
@@ -8,60 +8,129 @@ products:
 - windows-wdk
 ---
 
-# Windows Filtering Platform Traffic Inspection Sample
+# NetTraceGuard (WFP Adapter-Scoped Network Threat Monitor)
 
-This sample driver demonstrates the traffic inspection capabilities of the Windows Filtering Platform (WFP).
+NetTraceGuard is a new deliverable under `network/trans/` that combines:
 
-The sample driver consists of a kernel-mode Windows Filtering Platform (WFP) callout driver (Inspect.sys) that intercepts all transport layer traffic (for example, Transmission Control Protocol (TCP), User Datagram Protocol (UDP), and nonerror Internet Control Message Protocol (ICMP)) sent to or received from a configurable remote peer and queues then to a worker thread for out-of-band processing.
+- **Kernel-mode WFP callout driver** (based on the `inspect` sample pattern)
+- **User-mode control + analysis CLI** (`monitor.exe`, based on the `msnmntr` app structure)
+- **Replay-driven validation assets** and operational scripts
 
-Inspect.sys inspects inbound and outbound connections and all packets that belong to those connections. Additionally, Inspect.sys demonstrates the special considerations that are required to be compatible with Internet Protocol security (IPsec).
+## Capabilities
 
-Inspect.sys implements the `ClassifyFn` callout functions for the ALE Connect, Recv-Accept, and Transport callouts. In addition, the system worker thread that performs the actual packet inspection is also implemented along with the event mechanisms that are shared between the Classify function and the worker thread.
+1. **Windows support**
+   - Built for Visual Studio 2022 + WDK 11 using standard sample toolchains.
 
-Connect/Packet inspection is done out-of-band by a system worker thread by using the reference-drop-clone-reinject mechanism as well as the ALE pend/complete mechanism. Therefore, the sample can serve as a basis for scenarios in which a filtering decision cannot be made within the `classifyFn()` callout and instead must be made, for example, by a user-mode application.
+2. **Adapter-scoped monitoring**
+   - Driver supports filtering by adapter interface index (`AdapterIfIndex`) and optional adapter LUID registry fields.
+   - Live adapter switching is done by updating registry values and restarting the service (no rebuild/reinstall required).
 
-## Universal Windows Driver Compliant
+3. **Attack checks**
+   - ICMP flood heuristic: high-rate ICMP echo (`icmpType=8`) in a sampling window.
+   - DDoS heuristics:
+     - aggregate packet-rate spike
+     - per-source packet-rate spike
+     - fan-in anomaly (many concurrent sources)
+   - Thresholds, windows, severity, and cooldown are configurable.
 
-This sample builds a Universal Windows Driver. It uses only APIs and DDIs that are included in OneCoreUAP.
+4. **Analysis summary with user experience focus**
+   - Dashboard mode with top talkers and incident timeline.
+   - Exportable JSON + text reports with:
+     - what happened
+     - why it was flagged
+     - recommended action
 
-## Automatic deployment
+## Folder layout
 
-Before you automatically deploy a driver, you must provision the target computer. For instructions, see [Provision a computer for driver deployment and testing](https://docs.microsoft.com/windows-hardware/drivers/gettingstarted/provision-a-target-computer-wdk-8-1).
+- `sys/` - kernel WFP callout driver source and INF
+- `exe/` - user-mode CLI (`monitor.exe`) for config/analyze/dashboard
+- `config/` - JSON schema + default thresholds
+- `scripts/` - install/uninstall scripts
+- `tests/` - replay traces and replay validation script
 
-After you have provisioned the target computer, continue with these steps:
+## Build
 
-1. On the host computer, in Visual Studio, in Solution Explorer, right click **package** (lower case), and choose **Properties**. Navigate to **Configuration Properties \> Driver Install \> Deployment**.
+Open `nettraceguard.sln` in Visual Studio 2022 with WDK 11 installed.
 
-1. Check **Enable deployment**, and check **Remove previous driver versions before deployment**. For **Target Computer Name**, select the name of a target computer that you provisioned previously. Select **Do not install**. Click **OK**.
+Or use the repository build helper in a Developer PowerShell:
 
-1. On the **Build** menu, choose **Build Solution**.
+```powershell
+cd <repo-root>
+.\Build-Sample.ps1 -Directory .\network\trans\nettraceguard -Configuration Debug -Platform x64 -Verbose
+```
 
-1. On the target computer, navigate to DriverTest\\Drivers, and locate the file inspect.inf. Right click inspect.inf, and choose **Install**.
+## Deploy and run
 
-## Manual deployment
+1. Build the solution.
+2. On target machine (Admin prompt):
 
-Before you manually deploy a driver, you must turn on test signing and install a certificate on the target computer. You also need to copy the [DevCon](https://docs.microsoft.com/windows-hardware/drivers/devtest/devcon) tool to the target computer. For instructions, see [Preparing a Computer for Manual Driver Deployment](https://docs.microsoft.com/windows-hardware/drivers/develop/preparing-a-computer-for-manual-driver-deployment).
+```cmd
+cd <repo>\network\trans\nettraceguard\scripts
+NetTraceGuardInstall.cmd
+```
 
-After you have prepared the target computer for manual deployment, continue with these steps:
+3. Configure analyzer defaults:
 
-1. Copy all of the files in your driver package to a folder on the target computer (for example, c:\\WfpTrafficInspectionSamplePackage).
+```cmd
+cd <repo>\network\trans\nettraceguard\exe
+monitor.exe configure --config ..\config\default.nettraceguard.json --adapter-ifindex 12 --window-sec 10 --icmp-threshold 10 --ddos-aggregate-threshold 30 --ddos-per-source-threshold 10 --ddos-fanin-threshold 8 --cooldown-sec 15 --fail-mode permit
+```
 
-1. On the target computer, navigate to your driver package folder. Right click inspect.inf, and choose **Install**
+4. Analyze trace and export reports:
 
-## Create Registry values
+```cmd
+monitor.exe analyze --config ..\config\default.nettraceguard.json --input ..\tests\replay\attack-icmp-ddos.csv --json .\attack-report.json --text .\attack-report.txt
+```
 
-1. On the target computer, open Regedit, and navigate to this key:
+5. Run dashboard summary:
 
-    **HKLM**\\**System**\\**CurrentControlSet**\\**Services**\\**inspect**\\**Parameters**
+```cmd
+monitor.exe dashboard --config ..\config\default.nettraceguard.json --input ..\tests\replay\attack-icmp-ddos.csv
+```
 
-1. Create a REG\_DWORD entry named **BlockTraffic** and set it's value to 0 for permit or 1 to block.
+## Adapter switching
 
-1. Create a REG\_SZ entry named **RemoteAddressToInspect**, and set it's value to an IPV4 or IPV6 address (example: 10.0.0.2).
+To switch adapters without reinstall:
 
-## Start the inspect service
+```cmd
+reg add "HKLM\System\CurrentControlSet\Services\inspect\Parameters" /v AdapterIfIndex /t REG_DWORD /d <NEW_IFINDEX> /f
+sc stop inspect
+sc start inspect
+```
 
-On the target computer, open a Command Prompt window as Administrator, and enter `net start inspect`. (To stop the driver, enter `net stop inspect`.)
+## Validation and quality gates
 
-## Remarks
+Replay validation script:
 
-For more information on creating a Windows Filtering Platform Callout Driver, see [Windows Filtering Platform Callout Drivers](https://docs.microsoft.com/windows-hardware/drivers/network/windows-filtering-platform-callout-drivers2).
+```powershell
+cd <repo>\network\trans\nettraceguard\tests
+.\run-replay-tests.ps1 -MonitorExe ..\exe\x64\Debug\monitor.exe -ConfigPath ..\config\default.nettraceguard.json
+```
+
+Acceptance criteria:
+
+- Attack replay triggers `icmp_flood` and `distributed_flood` incidents.
+- Benign replay does not trigger critical incidents.
+- Reports are generated in both JSON and text forms.
+
+## Non-functional notes
+
+- **Low overhead**: adapter scoping and threshold-based detection limit analysis overhead.
+- **Fail mode**: configurable `permit`/`block` policy in analyzer config.
+- **Telemetry**: incident timeline and protocol/source summaries support triage.
+- **Privileges**: driver install, registry updates under service key, and callout registration require Administrator rights.
+
+## Troubleshooting
+
+- `msbuild cannot be called from current environment`:
+  - Use a Visual Studio Developer Command Prompt with WDK components.
+- Driver service not starting:
+  - Verify test signing/provisioning and INF install status.
+- No incidents detected in attack replay:
+  - Lower thresholds in config and verify adapterIfIndex matches input traces.
+
+## Known limitations
+
+- Current analyzer expects CSV trace input (`timestampMs,adapterIfIndex,src,dst,protocol,icmpType,bytes`).
+- LUID matching fields are loaded for adapter identity continuity but current driver classification path filters on interface index.
+- Heuristics are intentionally conservative sample logic, not production-grade threat intelligence.

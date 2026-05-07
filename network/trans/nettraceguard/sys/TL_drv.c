@@ -12,7 +12,7 @@ Abstract:
    The sample performs inspection of inbound and outbound connections as 
    well as all packets belong to those connections.  In addition the sample 
    demonstrates special considerations required to be compatible with Windows 
-   Vista and Windows Server 2008’s IpSec implementation.
+   Vista and Windows Server 2008ï¿½s IpSec implementation.
 
    Inspection parameters are configurable via the following registry 
    values --
@@ -21,7 +21,7 @@ Abstract:
       
     o  BlockTraffic (REG_DWORD) : 0 (permit, default); 1 (block)
     o  RemoteAddressToInspect (REG_SZ) : literal IPv4/IPv6 string 
-                                                (e.g. “10.0.0.1”)
+                                                (e.g. ï¿½10.0.0.1ï¿½)
    The sample is IP version agnostic. It performs inspection for 
    both IPv4 and IPv6 traffic.
 
@@ -59,6 +59,8 @@ Environment:
 //
 
 BOOLEAN configPermitTraffic = TRUE;
+ULONG configInspectIfIndex = 0;
+UINT64 configInspectAdapterLuid = 0;
 
 UINT8*   configInspectRemoteAddrV4 = NULL;
 UINT8*   configInspectRemoteAddrV6 = NULL;
@@ -186,7 +188,13 @@ TLInspectLoadConfig(
 {
    NTSTATUS status;
    DECLARE_CONST_UNICODE_STRING(valueName, L"RemoteAddressToInspect");
+   DECLARE_CONST_UNICODE_STRING(adapterIfIndexValueName, L"AdapterIfIndex");
+   DECLARE_CONST_UNICODE_STRING(adapterLuidLowValueName, L"AdapterLuidLowPart");
+   DECLARE_CONST_UNICODE_STRING(adapterLuidHighValueName, L"AdapterLuidHighPart");
    DECLARE_UNICODE_STRING_SIZE(value, INET6_ADDRSTRLEN);
+   ULONG adapterIfIndex = 0;
+   ULONG adapterLuidLow = 0;
+   ULONG adapterLuidHigh = 0;
    
    status = WdfRegistryQueryUnicodeString(key, &valueName, NULL, &value);
 
@@ -225,7 +233,23 @@ TLInspectLoadConfig(
       }
    }
 
-   return status;
+    if (!NT_SUCCESS(status))
+    {
+       status = STATUS_SUCCESS;
+    }
+
+    if (NT_SUCCESS(WdfRegistryQueryULong(key, &adapterIfIndexValueName, &adapterIfIndex)))
+    {
+       configInspectIfIndex = adapterIfIndex;
+    }
+
+    if (NT_SUCCESS(WdfRegistryQueryULong(key, &adapterLuidLowValueName, &adapterLuidLow)) &&
+        NT_SUCCESS(WdfRegistryQueryULong(key, &adapterLuidHighValueName, &adapterLuidHigh)))
+    {
+       configInspectAdapterLuid = (((UINT64)adapterLuidHigh) << 32) | adapterLuidLow;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS

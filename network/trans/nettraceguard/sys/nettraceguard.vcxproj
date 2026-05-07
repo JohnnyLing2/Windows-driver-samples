@@ -80,16 +80,16 @@
     <ClInclude Include="utils.h" />
   </ItemGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>inspect</TargetName>
+    <TargetName>nettraceguard</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
-    <TargetName>inspect</TargetName>
+    <TargetName>nettraceguard</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <TargetName>inspect</TargetName>
+    <TargetName>nettraceguard</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
-    <TargetName>inspect</TargetName>
+    <TargetName>nettraceguard</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ResourceCompile>
@@ -181,7 +181,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="inspect.c" />
-    <ClCompile Include="tl_drv.c" />
+    <ClCompile Include="TL_drv.c" />
     <ClCompile Include="utils.c" />
   </ItemGroup>
   <ItemGroup>
@@ -193,7 +193,7 @@
     <None Exclude="@(None)" Include="*.def;*.bat;*.hpj;*.asmx" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="inspect.inf" />
+    <Inf Include="nettraceguard.inf" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -1,715 +1,673 @@
-/*++
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <cstdint>
+#include <deque>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
-Copyright (c) Microsoft Corporation. All rights reserved
-
-Abstract:
-
-    Stream monitor sample executable
-
-Environment:
-
-    User mode
-    
---*/
-
-#include "windows.h"
-#include "winioctl.h"
-#include "strsafe.h"
-
-#ifndef _CTYPE_DISABLE_MACROS
-#define _CTYPE_DISABLE_MACROS
-#endif
-
-#include "fwpmu.h"
-
-#include "winsock2.h"
-#include "ws2def.h"
-
-#include <conio.h>
-#include <stdio.h>
-
-#include "ioctl.h"
-
-#define INITGUID
-#include <guiddef.h>
-#include "mntrguid.h"
-
-
-#define MONITOR_FLOW_ESTABLISHED_CALLOUT_DESCRIPTION L"Monitor Sample - Flow Established Callout"
-#define MONITOR_FLOW_ESTABLISHED_CALLOUT_NAME L"Flow Established Callout"
-
-#define MONITOR_STREAM_CALLOUT_DESCRIPTION L"Monitor Sample - Stream Callout"
-#define MONITOR_STREAM_CALLOUT_NAME L"Stream Callout"
-
-HANDLE quitEvent;
-
-DWORD
-MonitorAppOpenMonitorDevice(
-   _Out_ HANDLE* monitorDevice)
-/*++
-
-Routine Description:
-
-    Opens the Monitor Sample monitorDevice
-
-Arguments:
-
-    [out] HANDLE* monitorDevice
-
-Return Value:
-
-    NO_ERROR, ERROR_INVALID_PARAMETER or a CreateFile specific result.
-
---*/
+struct GuardConfig
 {
-    if (!monitorDevice)
+    uint32_t adapterIfIndex = 0;
+    uint64_t adapterLuid = 0;
+    uint32_t windowSeconds = 10;
+    uint32_t icmpEchoThreshold = 10;
+    uint32_t ddosAggregatePpsThreshold = 30;
+    uint32_t ddosPerSourcePpsThreshold = 10;
+    uint32_t ddosFanInThreshold = 8;
+    uint32_t cooldownSeconds = 15;
+    std::string failMode = "permit";
+};
+
+struct PacketRecord
+{
+    uint64_t timestampMs = 0;
+    uint32_t adapterIfIndex = 0;
+    std::string src;
+    std::string dst;
+    std::string protocol;
+    uint32_t icmpType = 0;
+    uint32_t bytes = 0;
+};
+
+struct Incident
+{
+    uint64_t timestampMs = 0;
+    std::string severity;
+    std::string attackType;
+    std::string why;
+    std::string action;
+};
+
+struct AnalysisResult
+{
+    uint64_t packetCount = 0;
+    uint64_t byteCount = 0;
+    std::map<std::string, uint64_t> protocolCount;
+    std::unordered_map<std::string, uint64_t> sourceCount;
+    std::unordered_map<std::string, uint64_t> destinationCount;
+    std::vector<Incident> incidents;
+};
+
+static bool ParseUint64(const std::string& s, uint64_t& value)
+{
+    try
     {
-        return ERROR_INVALID_PARAMETER;
+        size_t idx = 0;
+        value = std::stoull(s, &idx, 10);
+        return idx == s.size();
     }
-    *monitorDevice = CreateFileW(MONITOR_DOS_NAME, 
-                                 GENERIC_READ | GENERIC_WRITE, 
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE, 
-                                 NULL, 
-                                 OPEN_EXISTING, 
-                                 0, 
-                                 NULL);
-
-    if (*monitorDevice == INVALID_HANDLE_VALUE)
+    catch (...)
     {
-       return GetLastError();
+        return false;
+    }
+}
+
+static bool ParseUint32(const std::string& s, uint32_t& value)
+{
+    uint64_t temp = 0;
+    if (!ParseUint64(s, temp) || temp > 0xFFFFFFFFull)
+    {
+        return false;
     }
 
-    return NO_ERROR;
+    value = static_cast<uint32_t>(temp);
+    return true;
 }
 
-BOOL MonitorAppCloseMonitorDevice(
-   _In_ HANDLE monitorDevice)
-/*++
-
-Routine Description:
-
-    Closes the Monitor Sample monitorDevice
-
-Arguments:
-
-Return Value:
-
-    None.
-
---*/
+static std::vector<std::string> SplitCsvLine(const std::string& line)
 {
-    return CloseHandle(monitorDevice);
+    std::vector<std::string> out;
+    std::stringstream ss(line);
+    std::string token;
+    while (std::getline(ss, token, ','))
+    {
+        out.push_back(token);
+    }
+    return out;
 }
 
-DWORD
-MonitorAppAddCallouts()
-/*++
-
-Routine Description:
-
-   Adds the callouts during installation
-
-Arguments:
-   
-   [in]  PCWSTR AppPath - The path to the application to monitor.
-
-Return Value:
-
-    NO_ERROR or a specific FWP result.
-
---*/
+static bool LoadPackets(const std::string& inputCsv, std::vector<PacketRecord>& packets)
 {
-   FWPM_CALLOUT callout;
-   DWORD result;
-   FWPM_DISPLAY_DATA displayData;
-   HANDLE engineHandle = NULL;
-   FWPM_SESSION session;
-   RtlZeroMemory(&session, sizeof(FWPM_SESSION));
+    std::ifstream in(inputCsv);
+    if (!in)
+    {
+        std::cerr << "Failed to open trace file: " << inputCsv << "\n";
+        return false;
+    }
 
-   session.displayData.name = L"Monitor Sample Non-Dynamic Session";
-   session.displayData.description = L"For Adding callouts";
+    std::string line;
+    uint64_t lineNo = 0;
+    while (std::getline(in, line))
+    {
+        ++lineNo;
+        if (line.empty())
+        {
+            continue;
+        }
 
-   printf("Opening Filtering Engine\n");
-   result =  FwpmEngineOpen(
-                            NULL,
-                            RPC_C_AUTHN_WINNT,
-                            NULL,
-                            &session,
-                            &engineHandle
-                            );
+        if (lineNo == 1 && line.find("timestampMs") != std::string::npos)
+        {
+            continue;
+        }
 
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
+        auto cols = SplitCsvLine(line);
+        if (cols.size() < 7)
+        {
+            std::cerr << "Skipping malformed CSV line " << lineNo << "\n";
+            continue;
+        }
 
-   printf("Starting Transaction for adding callouts\n");
-   result = FwpmTransactionBegin(engineHandle, 0);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
+        PacketRecord p;
+        if (!ParseUint64(cols[0], p.timestampMs) || !ParseUint32(cols[1], p.adapterIfIndex) ||
+            !ParseUint32(cols[5], p.icmpType) || !ParseUint32(cols[6], p.bytes))
+        {
+            std::cerr << "Skipping invalid numeric values at line " << lineNo << "\n";
+            continue;
+        }
 
-   printf("Successfully started the Transaction\n");
+        p.src = cols[2];
+        p.dst = cols[3];
+        p.protocol = cols[4];
+        packets.push_back(std::move(p));
+    }
 
-   RtlZeroMemory(&callout, sizeof(FWPM_CALLOUT));
-   displayData.description = MONITOR_FLOW_ESTABLISHED_CALLOUT_DESCRIPTION;
-   displayData.name = MONITOR_FLOW_ESTABLISHED_CALLOUT_NAME;
-
-   callout.calloutKey = MONITOR_SAMPLE_FLOW_ESTABLISHED_CALLOUT_V4;
-   callout.displayData = displayData;
-   callout.applicableLayer = FWPM_LAYER_ALE_FLOW_ESTABLISHED_V4;
-   callout.flags = FWPM_CALLOUT_FLAG_PERSISTENT; // Make this a persistent callout.
-
-   printf("Adding Persistent Flow Established callout through the Filtering Engine\n");
-
-   result = FwpmCalloutAdd(engineHandle, &callout, NULL, NULL);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-
-   printf("Successfully Added Persistent Flow Established callout.\n");
-
-   RtlZeroMemory(&callout, sizeof(FWPM_CALLOUT));
-
-   displayData.description = MONITOR_STREAM_CALLOUT_DESCRIPTION;
-   displayData.name = MONITOR_STREAM_CALLOUT_DESCRIPTION;
-
-   callout.calloutKey = MONITOR_SAMPLE_STREAM_CALLOUT_V4;
-   callout.displayData = displayData;
-   callout.applicableLayer = FWPM_LAYER_STREAM_V4;
-   callout.flags = FWPM_CALLOUT_FLAG_PERSISTENT; // Make this a persistent callout.
-
-   printf("Adding Persistent Stream callout through the Filtering Engine\n");
-
-   result = FwpmCalloutAdd(engineHandle, &callout, NULL, NULL);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-
-   printf("Successfully Added Persistent Stream callout.\n");
-   
-   printf("Committing Transaction\n");
-   result = FwpmTransactionCommit(engineHandle);
-   if (NO_ERROR == result)
-   {
-      printf("Successfully Committed Transaction.\n");
-   }
-   goto cleanup;
-
-abort:
-   printf("Aborting Transaction\n");
-   result = FwpmTransactionAbort(engineHandle);
-   if (NO_ERROR == result)
-   {
-      printf("Successfully Aborted Transaction.\n");
-   }
-
-cleanup:
-
-   if (engineHandle)
-   {
-      FwpmEngineClose(engineHandle);
-   }
-   return result;
+    return true;
 }
 
-DWORD
-MonitorAppRemoveCallouts()
-/*++
-
-Routine Description:
-
-   Sets the kernel callout ID's through the Monitor Sample device
-
-Arguments:
-   
-   [in] HANDLE monitorDevice - Monitor Sample device
-   [in] CALLOUTS* callouts - Callout structure with ID's set
-   [in] DWORD size - Size of the callout structure.
-
-Return Value:
-
-    NO_ERROR or a specific DeviceIoControl result.
-
---*/
+static bool LoadConfig(const std::string& path, GuardConfig& cfg)
 {
-   DWORD result;
-   HANDLE engineHandle = NULL;
-   FWPM_SESSION session;
+    std::ifstream in(path);
+    if (!in)
+    {
+        return false;
+    }
 
-   RtlZeroMemory(&session, sizeof(FWPM_SESSION));
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string content = ss.str();
 
-   session.displayData.name = L"Monitor Sample Non-Dynamic Session";
-   session.displayData.description = L"For Adding callouts";
+    auto ReadNumeric = [&](const std::string& key, uint64_t& target) {
+        const std::string marker = "\"" + key + "\"";
+        auto pos = content.find(marker);
+        if (pos == std::string::npos)
+        {
+            return;
+        }
 
-   printf("Opening Filtering Engine\n");
-   result =  FwpmEngineOpen(
-                            NULL,
-                            RPC_C_AUTHN_WINNT,
-                            NULL,
-                            &session,
-                            &engineHandle
-                            );
+        pos = content.find(':', pos);
+        if (pos == std::string::npos)
+        {
+            return;
+        }
 
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
+        ++pos;
+        while (pos < content.size() && std::isspace(static_cast<unsigned char>(content[pos])))
+        {
+            ++pos;
+        }
 
-   printf("Starting Transaction for Removing callouts\n");
+        size_t end = pos;
+        while (end < content.size() && std::isdigit(static_cast<unsigned char>(content[end])))
+        {
+            ++end;
+        }
 
-   result = FwpmTransactionBegin(engineHandle, 0);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-   printf("Successfully started the Transaction\n");
+        uint64_t value = 0;
+        if (end > pos && ParseUint64(content.substr(pos, end - pos), value))
+        {
+            target = value;
+        }
+    };
 
-   printf("Deleting Flow Established callout\n");
-   result = FwpmCalloutDeleteByKey(engineHandle,
-                                    &MONITOR_SAMPLE_FLOW_ESTABLISHED_CALLOUT_V4);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
+    uint64_t temp = 0;
+    ReadNumeric("adapterIfIndex", temp); cfg.adapterIfIndex = static_cast<uint32_t>(temp);
+    ReadNumeric("adapterLuid", temp); cfg.adapterLuid = temp;
+    ReadNumeric("windowSeconds", temp); cfg.windowSeconds = static_cast<uint32_t>(temp);
+    ReadNumeric("icmpEchoThreshold", temp); cfg.icmpEchoThreshold = static_cast<uint32_t>(temp);
+    ReadNumeric("ddosAggregatePpsThreshold", temp); cfg.ddosAggregatePpsThreshold = static_cast<uint32_t>(temp);
+    ReadNumeric("ddosPerSourcePpsThreshold", temp); cfg.ddosPerSourcePpsThreshold = static_cast<uint32_t>(temp);
+    ReadNumeric("ddosFanInThreshold", temp); cfg.ddosFanInThreshold = static_cast<uint32_t>(temp);
+    ReadNumeric("cooldownSeconds", temp); cfg.cooldownSeconds = static_cast<uint32_t>(temp);
 
-   printf("Successfully Deleted Flow Established callout\n");
+    const std::string failModeKey = "\"failMode\"";
+    auto failPos = content.find(failModeKey);
+    if (failPos != std::string::npos)
+    {
+        failPos = content.find(':', failPos);
+        if (failPos != std::string::npos)
+        {
+            auto quoteStart = content.find('"', failPos + 1);
+            if (quoteStart != std::string::npos)
+            {
+                auto quoteEnd = content.find('"', quoteStart + 1);
+                if (quoteEnd != std::string::npos)
+                {
+                    cfg.failMode = content.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
+                }
+            }
+        }
+    }
 
-   printf("Deleting Stream callout\n");
-
-   result = FwpmCalloutDeleteByKey(engineHandle,
-                                    &MONITOR_SAMPLE_STREAM_CALLOUT_V4);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-   printf("Successfully Deleted Stream callout\n");
-
-   printf("Committing Transaction\n");
-   result = FwpmTransactionCommit(engineHandle);
-   if (NO_ERROR == result)
-   {
-      printf("Successfully Committed Transaction.\n");
-   }
-   goto cleanup;
-   
-abort:
-   printf("Aborting Transaction\n");
-   result = FwpmTransactionAbort(engineHandle);
-   if (NO_ERROR == result)
-   {
-      printf("Successfully Aborted Transaction.\n");
-   }
-
-cleanup:
-
-   if (engineHandle)
-   {
-      FwpmEngineClose(engineHandle);
-   }
-
-   return result;
+    return true;
 }
 
-DWORD
-MonitorAppEnableMonitoring(
-   _In_    HANDLE            monitorDevice,
-   _In_    MONITOR_SETTINGS* monitorSettings)
-/*++
-
-Routine Description:
-
-   Enables monitoring on new connections.
-
-Arguments:
-   
-   [in] HANDLE monitorDevice - Monitor Sample device
-   [in] MONITOR_SETTINGS* monitorSettings - Settings for the Monitor Sample driver.
-
-Return Value:
-
-    NO_ERROR or a specific DeviceIoControl result.
-
---*/
+static bool SaveConfig(const std::string& path, const GuardConfig& cfg)
 {
-   DWORD bytesReturned;
-   
-   if (!DeviceIoControl(monitorDevice,
-                        MONITOR_IOCTL_ENABLE_MONITOR,
-                        monitorSettings,
-                        sizeof(MONITOR_SETTINGS),
-                        NULL,
-                        0,
-                        &bytesReturned,
-                        NULL))
-   {
-      return GetLastError();
-   }
+    std::ofstream out(path);
+    if (!out)
+    {
+        return false;
+    }
 
-   return NO_ERROR;
+    out << "{\n"
+        << "  \"adapterIfIndex\": " << cfg.adapterIfIndex << ",\n"
+        << "  \"adapterLuid\": " << cfg.adapterLuid << ",\n"
+        << "  \"windowSeconds\": " << cfg.windowSeconds << ",\n"
+        << "  \"icmpEchoThreshold\": " << cfg.icmpEchoThreshold << ",\n"
+        << "  \"ddosAggregatePpsThreshold\": " << cfg.ddosAggregatePpsThreshold << ",\n"
+        << "  \"ddosPerSourcePpsThreshold\": " << cfg.ddosPerSourcePpsThreshold << ",\n"
+        << "  \"ddosFanInThreshold\": " << cfg.ddosFanInThreshold << ",\n"
+        << "  \"cooldownSeconds\": " << cfg.cooldownSeconds << ",\n"
+        << "  \"failMode\": \"" << cfg.failMode << "\"\n"
+        << "}\n";
+
+    return true;
 }
 
-DWORD
-MonitorAppDisableMonitoring(
-   _In_    HANDLE            monitorDevice)
-/*++
-
-Routine Description:
-
-   Disables monitoring of new flows (existing flows will continue to be
-   monitored until the driver is stopped or the flows end).
-
-Arguments:
-
-   [in] HANDLE monitorDevice - Monitor Sample device handle.
-   
-Return Value:
-
-   NO_ERROR or DeviceIoControl specific code.
-
---*/
+static void PushIncident(
+    AnalysisResult& result,
+    uint64_t timestampMs,
+    const std::string& severity,
+    const std::string& attackType,
+    const std::string& why,
+    const std::string& action,
+    std::unordered_map<std::string, uint64_t>& lastIncidentMs,
+    uint32_t cooldownSeconds)
 {
-   DWORD bytesReturned;
-   
-   if (!DeviceIoControl(monitorDevice,
-                        MONITOR_IOCTL_DISABLE_MONITOR,
-                        NULL,
-                        0,
-                        NULL,
-                        0,
-                        &bytesReturned,
-                        NULL))
-   {
-      return GetLastError();
-   }
+    auto it = lastIncidentMs.find(attackType);
+    if (it != lastIncidentMs.end() && timestampMs < (it->second + static_cast<uint64_t>(cooldownSeconds) * 1000ull))
+    {
+        return;
+    }
 
-   return NO_ERROR;
+    lastIncidentMs[attackType] = timestampMs;
+    result.incidents.push_back(Incident{ timestampMs, severity, attackType, why, action });
 }
 
-DWORD
-MonitorAppAddFilters(
-   _In_    HANDLE         engineHandle,
-   _In_    FWP_BYTE_BLOB* applicationPath)
-/*++
-
-Routine Description:
-
-    Adds the required sublayer, filters and callouts to the Windows
-    Filtering Platform (WFP).
-
-Arguments:
-   
-   [in] HANDLE engineHandle - Handle to the base Filtering engine
-   [in] FWP_BYTE_BLOB* applicationPath - full path to the application including
-                                         the NULL terminator and size also 
-                                         including the NULL the terminator
-   [in] CALLOUTS* callouts - The callouts that need to be added.
-
-Return Value:
-
-    NO_ERROR or a specific result
-
---*/
+static AnalysisResult Analyze(const std::vector<PacketRecord>& packets, const GuardConfig& cfg)
 {
-   DWORD result = NO_ERROR;
-   FWPM_SUBLAYER monitorSubLayer;
-   FWPM_FILTER filter;
-   FWPM_FILTER_CONDITION filterConditions[2]; // We only need two for this call.
+    AnalysisResult result;
 
-   RtlZeroMemory(&monitorSubLayer, sizeof(FWPM_SUBLAYER)); 
+    std::deque<uint64_t> icmpWindow;
+    std::deque<uint64_t> aggregateWindow;
+    std::unordered_map<std::string, std::deque<uint64_t>> sourceWindows;
+    std::unordered_map<std::string, uint64_t> sourceWindowCount;
+    std::unordered_map<std::string, uint64_t> lastIncidentMs;
 
-   monitorSubLayer.subLayerKey = MONITOR_SAMPLE_SUBLAYER;
-   monitorSubLayer.displayData.name = L"Monitor Sample Sub layer";
-   monitorSubLayer.displayData.description = L"Monitor Sample Sub layer";
-   monitorSubLayer.flags = 0;
-   // We don't really mind what the order of invocation is.
-   monitorSubLayer.weight = 0;
-   
-   printf("Starting Transaction\n");
+    const uint64_t windowMs = static_cast<uint64_t>(cfg.windowSeconds) * 1000ull;
 
-   result = FwpmTransactionBegin(engineHandle, 0);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-   printf("Successfully Started Transaction\n");
+    for (const auto& p : packets)
+    {
+        if (cfg.adapterIfIndex != 0 && p.adapterIfIndex != cfg.adapterIfIndex)
+        {
+            continue;
+        }
 
-   printf("Adding Sublayer\n");
+        ++result.packetCount;
+        result.byteCount += p.bytes;
+        ++result.protocolCount[p.protocol];
+        ++result.sourceCount[p.src];
+        ++result.destinationCount[p.dst];
 
-   result = FwpmSubLayerAdd(engineHandle, &monitorSubLayer, NULL);
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-   
-   printf("Sucessfully added Sublayer\n");
-   
-   RtlZeroMemory(&filter, sizeof(FWPM_FILTER));
+        aggregateWindow.push_back(p.timestampMs);
+        while (!aggregateWindow.empty() && p.timestampMs - aggregateWindow.front() > windowMs)
+        {
+            aggregateWindow.pop_front();
+        }
 
-   filter.layerKey = FWPM_LAYER_ALE_FLOW_ESTABLISHED_V4;
-   filter.displayData.name = L"Flow established filter.";
-   filter.displayData.description = L"Sets up flow for traffic that we are interested in.";
-   filter.action.type = FWP_ACTION_CALLOUT_INSPECTION; // We're only doing inspection.
-   filter.action.calloutKey = MONITOR_SAMPLE_FLOW_ESTABLISHED_CALLOUT_V4;
-   filter.filterCondition = filterConditions;
-   filter.subLayerKey = monitorSubLayer.subLayerKey;
-   filter.weight.type = FWP_EMPTY; // auto-weight.
-      
-   filter.numFilterConditions = 2;
+        auto& srcWindow = sourceWindows[p.src];
+        srcWindow.push_back(p.timestampMs);
+        while (!srcWindow.empty() && p.timestampMs - srcWindow.front() > windowMs)
+        {
+            srcWindow.pop_front();
+        }
 
-   RtlZeroMemory(filterConditions, sizeof(filterConditions));
+        if (p.protocol == "ICMP" && p.icmpType == 8)
+        {
+            icmpWindow.push_back(p.timestampMs);
+            while (!icmpWindow.empty() && p.timestampMs - icmpWindow.front() > windowMs)
+            {
+                icmpWindow.pop_front();
+            }
 
-   //
-   // Add the application path to the filter conditions.
-   //
-   filterConditions[0].fieldKey = FWPM_CONDITION_ALE_APP_ID;
-   filterConditions[0].matchType = FWP_MATCH_EQUAL;
-   filterConditions[0].conditionValue.type = FWP_BYTE_BLOB_TYPE;
-   filterConditions[0].conditionValue.byteBlob = applicationPath;
+            if (icmpWindow.size() >= cfg.icmpEchoThreshold)
+            {
+                PushIncident(
+                    result,
+                    p.timestampMs,
+                    "high",
+                    "icmp_flood",
+                    "High-rate ICMP echo requests exceeded threshold within sampling window.",
+                    "Rate-limit echo traffic on selected adapter and inspect dominant sources.",
+                    lastIncidentMs,
+                    cfg.cooldownSeconds);
+            }
+        }
 
-   //
-   // For the purposes of this sample, we will monitor TCP traffic only.
-   //
-   filterConditions[1].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
-   filterConditions[1].matchType = FWP_MATCH_EQUAL;
-   filterConditions[1].conditionValue.type = FWP_UINT8;
-   filterConditions[1].conditionValue.uint8 = IPPROTO_TCP;
+        if (srcWindow.size() >= cfg.ddosPerSourcePpsThreshold)
+        {
+            PushIncident(
+                result,
+                p.timestampMs,
+                "medium",
+                "per_source_spike",
+                "Single source packet-rate exceeded per-source DDoS threshold.",
+                "Apply temporary block/rate-limit policy for source and validate legitimacy.",
+                lastIncidentMs,
+                cfg.cooldownSeconds);
+        }
 
-   printf("Adding Flow Established Filter\n");
+        if (aggregateWindow.size() >= cfg.ddosAggregatePpsThreshold)
+        {
+            std::set<std::string> distinctSources;
+            for (const auto& sourcePair : sourceWindows)
+            {
+                if (!sourcePair.second.empty())
+                {
+                    distinctSources.insert(sourcePair.first);
+                }
+            }
 
-   result = FwpmFilterAdd(engineHandle,
-                       &filter,
-                       NULL,
-                       NULL);
+            if (distinctSources.size() >= cfg.ddosFanInThreshold)
+            {
+                PushIncident(
+                    result,
+                    p.timestampMs,
+                    "critical",
+                    "distributed_flood",
+                    "Aggregate packet-rate and source fan-in exceeded DDoS thresholds.",
+                    "Enable fail-" + cfg.failMode + " policy, isolate adapter, and trigger incident response.",
+                    lastIncidentMs,
+                    cfg.cooldownSeconds);
+            }
+        }
+    }
 
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-
-   printf("Successfully added Flow Established filter\n");
-  
-   RtlZeroMemory(&filter, sizeof(FWPM_FILTER));
-
-   filter.layerKey = FWPM_LAYER_STREAM_V4;
-   filter.action.type = FWP_ACTION_CALLOUT_INSPECTION; // We're only doing inspection.
-   filter.action.calloutKey = MONITOR_SAMPLE_STREAM_CALLOUT_V4;
-   filter.subLayerKey = monitorSubLayer.subLayerKey;
-   filter.weight.type = FWP_EMPTY; // auto-weight.
-   
-   filter.numFilterConditions = 0;
-   
-   RtlZeroMemory(filterConditions, sizeof(filterConditions));
-
-   filter.filterCondition = filterConditions;
-   
-   filter.displayData.name = L"Stream Layer Filter";
-   filter.displayData.description = L"Monitors TCP traffic.";
-
-   printf("Adding Stream Filter\n");
-
-   result = FwpmFilterAdd(engineHandle,
-                       &filter,
-                       NULL,
-                       NULL);
-
-   if (NO_ERROR != result)
-   {
-      goto abort;
-   }
-
-   printf("Successfully added Stream filter\n");
-
-   printf("Committing Transaction\n");
-   result = FwpmTransactionCommit(engineHandle);
-   if (NO_ERROR == result)
-   {
-      printf("Successfully Committed Transaction\n");
-   }
-   goto cleanup;
-
-abort:
-   printf("Aborting Transaction\n");
-   result = FwpmTransactionAbort(engineHandle);
-   if (NO_ERROR == result)
-   {
-      printf("Successfully Aborted Transaction\n");
-   }
-
-cleanup:
-   
-   return result;
+    return result;
 }
 
-DWORD
-MonitorAppIDFromPath(
-    _In_ PCWSTR fileName,
-    _Out_ FWP_BYTE_BLOB** appId)
+static std::vector<std::pair<std::string, uint64_t>> TopN(const std::unordered_map<std::string, uint64_t>& input, size_t n)
 {
-   DWORD result = NO_ERROR;
-   
-   result = FwpmGetAppIdFromFileName(fileName, appId);
+    std::vector<std::pair<std::string, uint64_t>> entries(input.begin(), input.end());
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+    });
 
-   return result;
+    if (entries.size() > n)
+    {
+        entries.resize(n);
+    }
+
+    return entries;
 }
 
-DWORD
-MonitorAppDoMonitoring(PCWSTR AppPath)
+static bool WriteJsonReport(const std::string& jsonPath, const AnalysisResult& result)
 {
-   HANDLE            monitorDevice = NULL;
-   HANDLE            engineHandle = NULL;
-   DWORD             result;
-   MONITOR_SETTINGS  monitorSettings;
-   FWPM_SESSION     session;
-   FWP_BYTE_BLOB*    applicationId = NULL;
+    std::ofstream out(jsonPath);
+    if (!out)
+    {
+        return false;
+    }
 
-   RtlZeroMemory(&monitorSettings, sizeof(MONITOR_SETTINGS));
-   RtlZeroMemory(&session, sizeof(FWPM_SESSION));
+    out << "{\n";
+    out << "  \"summary\": {\n";
+    out << "    \"packets\": " << result.packetCount << ",\n";
+    out << "    \"bytes\": " << result.byteCount << "\n";
+    out << "  },\n";
 
-   session.displayData.name = L"Monitor Sample Session";
-   session.displayData.description = L"Monitors traffic at the Stream layer.";
+    out << "  \"protocolBreakdown\": {";
+    bool first = true;
+    for (const auto& protocol : result.protocolCount)
+    {
+        if (!first) out << ", ";
+        out << "\"" << protocol.first << "\": " << protocol.second;
+        first = false;
+    }
+    out << "},\n";
 
-   // Let the Base Filtering Engine cleanup after us.
-   session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+    out << "  \"incidents\": [\n";
+    for (size_t i = 0; i < result.incidents.size(); ++i)
+    {
+        const auto& inc = result.incidents[i];
+        out << "    {\n";
+        out << "      \"timestampMs\": " << inc.timestampMs << ",\n";
+        out << "      \"severity\": \"" << inc.severity << "\",\n";
+        out << "      \"type\": \"" << inc.attackType << "\",\n";
+        out << "      \"why\": \"" << inc.why << "\",\n";
+        out << "      \"recommendedAction\": \"" << inc.action << "\"\n";
+        out << "    }" << (i + 1 == result.incidents.size() ? "" : ",") << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
 
-   printf("Opening Filtering Engine\n");
-   result =  FwpmEngineOpen(
-                            NULL,
-                            RPC_C_AUTHN_WINNT,
-                            NULL,
-                            &session,
-                            &engineHandle
-                            );
-
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
-
-   printf("Successfully opened Filtering Engine\n");
-
-   printf("Looking up Application ID from BFE\n");
-   result = MonitorAppIDFromPath(AppPath, &applicationId);
-
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
-
-   printf("Successfully retrieved Application ID\n");
-
-   printf("Opening Monitor Sample Device\n");
-
-   result = MonitorAppOpenMonitorDevice(&monitorDevice);
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
-
-   printf("Successfully opened Monitor Device\n");
-
-   printf("Adding Filters through the Filtering Engine\n");
-
-   result = MonitorAppAddFilters(engineHandle, 
-                                applicationId);
-
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
-
-   printf("Successfully added Filters through the Filtering Engine\n");
-
-   printf("Enabling monitoring through the Monitor Sample Device\n");
-
-   monitorSettings.monitorOperation = monitorTraffic;
-   
-   result = MonitorAppEnableMonitoring(monitorDevice,
-                                      &monitorSettings);
-   if (NO_ERROR != result)
-   {
-      goto cleanup;
-   }
-
-   printf("Successfully enabled monitoring.\n");
-
-   printf("Events will be traced through WMI. Please press any key to exit and cleanup filters.\n");
-
-#pragma prefast(push)
-#pragma prefast(disable:6031, "by design the return value of _getch() is ignored here")
-   _getch();
-#pragma prefast(pop)
-
-cleanup:
-
-   if (NO_ERROR != result)
-   {
-      printf("Monitor.\tError 0x%x occurred during execution\n", result);
-   }
-
-   if (monitorDevice)
-   {
-      MonitorAppCloseMonitorDevice(monitorDevice);
-   }
-
-   //
-   // Free the application Id that we retrieved.
-   //
-   if (applicationId)
-   {
-      FwpmFreeMemory((void**)&applicationId);
-   }
-   
-   if (engineHandle)
-   {
-      result =  FwpmEngineClose(engineHandle);
-      engineHandle = NULL;
-   }
-
-   return result;
+    return true;
 }
 
-void
-MonitorPrintUsage()
+static bool WriteTextReport(const std::string& textPath, const AnalysisResult& result)
 {
-   wprintf(L"Usage: monitor ( addcallouts | delcallouts | monitor <targetApp.exe> )\n");
+    std::ofstream out(textPath);
+    if (!out)
+    {
+        return false;
+    }
+
+    out << "NetTraceGuard Analysis Summary\n";
+    out << "=============================\n";
+    out << "Packets analyzed: " << result.packetCount << "\n";
+    out << "Bytes analyzed:   " << result.byteCount << "\n\n";
+
+    out << "Protocol breakdown:\n";
+    for (const auto& protocol : result.protocolCount)
+    {
+        out << "  - " << protocol.first << ": " << protocol.second << "\n";
+    }
+
+    out << "\nTop sources:\n";
+    for (const auto& source : TopN(result.sourceCount, 5))
+    {
+        out << "  - " << source.first << ": " << source.second << " packets\n";
+    }
+
+    out << "\nTop destinations:\n";
+    for (const auto& dest : TopN(result.destinationCount, 5))
+    {
+        out << "  - " << dest.first << ": " << dest.second << " packets\n";
+    }
+
+    out << "\nIncident timeline:\n";
+    if (result.incidents.empty())
+    {
+        out << "  - no incidents detected\n";
+    }
+    else
+    {
+        for (const auto& inc : result.incidents)
+        {
+            out << "  - [" << inc.timestampMs << "ms] " << inc.severity << " " << inc.attackType
+                << " | " << inc.why << " | Action: " << inc.action << "\n";
+        }
+    }
+
+    return true;
 }
 
-DWORD
-MonitorAppProcessArguments(_In_ int argc, _In_reads_(argc) PCWSTR argv[])
+static void PrintUsage()
 {
-   if (argc == 2)
-   {
-      if (_wcsicmp(argv[1], L"addcallouts") == 0)
-      {
-         return MonitorAppAddCallouts();
-      }
-      if (_wcsicmp(argv[1], L"delcallouts") == 0)
-      {
-         return MonitorAppRemoveCallouts();
-      }
-   }
-
-   if (argc == 3)
-   {
-      if (_wcsicmp(argv[1], L"monitor") == 0)
-      {
-         return MonitorAppDoMonitoring(argv[2]);
-      }
-   }
-
-   MonitorPrintUsage();
-   return ERROR_INVALID_PARAMETER;
+    std::cout
+        << "NetTraceGuard control and analysis utility\n\n"
+        << "Commands:\n"
+        << "  configure --config <path> [--adapter-ifindex N] [--adapter-luid N] [--window-sec N]"
+        << " [--icmp-threshold N] [--ddos-aggregate-threshold N] [--ddos-per-source-threshold N]"
+        << " [--ddos-fanin-threshold N] [--cooldown-sec N] [--fail-mode permit|block]\n"
+        << "  analyze --config <path> --input <trace.csv> --json <report.json> --text <report.txt>\n"
+        << "  dashboard --config <path> --input <trace.csv>\n\n"
+        << "CSV format:\n"
+        << "  timestampMs,adapterIfIndex,src,dst,protocol,icmpType,bytes\n";
 }
 
-int __cdecl wmain(_In_ int argc, _In_reads_(argc) PCWSTR argv[])
+static std::string GetArg(int argc, char** argv, int& i)
 {
-   DWORD result;
-   
-   result = MonitorAppProcessArguments(argc, argv);
+    if (i + 1 >= argc)
+    {
+        return {};
+    }
 
-   return (int)result;
+    ++i;
+    return argv[i];
+}
+
+int main(int argc, char** argv)
+{
+    if (argc < 2)
+    {
+        PrintUsage();
+        return 1;
+    }
+
+    const std::string command = argv[1];
+
+    if (command == "configure")
+    {
+        GuardConfig cfg;
+        std::string configPath;
+
+        for (int i = 2; i < argc; ++i)
+        {
+            const std::string key = argv[i];
+            std::string value;
+
+            if (key == "--config")
+            {
+                configPath = GetArg(argc, argv, i);
+            }
+            else if (key == "--adapter-ifindex")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.adapterIfIndex);
+            }
+            else if (key == "--adapter-luid")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint64(value, cfg.adapterLuid);
+            }
+            else if (key == "--window-sec")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.windowSeconds);
+            }
+            else if (key == "--icmp-threshold")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.icmpEchoThreshold);
+            }
+            else if (key == "--ddos-aggregate-threshold")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.ddosAggregatePpsThreshold);
+            }
+            else if (key == "--ddos-per-source-threshold")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.ddosPerSourcePpsThreshold);
+            }
+            else if (key == "--ddos-fanin-threshold")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.ddosFanInThreshold);
+            }
+            else if (key == "--cooldown-sec")
+            {
+                value = GetArg(argc, argv, i);
+                ParseUint32(value, cfg.cooldownSeconds);
+            }
+            else if (key == "--fail-mode")
+            {
+                cfg.failMode = GetArg(argc, argv, i);
+            }
+        }
+
+        if (configPath.empty())
+        {
+            std::cerr << "Missing --config\n";
+            return 1;
+        }
+
+        if (!SaveConfig(configPath, cfg))
+        {
+            std::cerr << "Failed to write config to " << configPath << "\n";
+            return 1;
+        }
+
+        std::cout << "Saved configuration to " << configPath << "\n";
+        return 0;
+    }
+
+    if (command == "analyze" || command == "dashboard")
+    {
+        GuardConfig cfg;
+        std::string configPath;
+        std::string inputPath;
+        std::string jsonPath;
+        std::string textPath;
+
+        for (int i = 2; i < argc; ++i)
+        {
+            const std::string key = argv[i];
+            if (key == "--config")
+            {
+                configPath = GetArg(argc, argv, i);
+            }
+            else if (key == "--input")
+            {
+                inputPath = GetArg(argc, argv, i);
+            }
+            else if (key == "--json")
+            {
+                jsonPath = GetArg(argc, argv, i);
+            }
+            else if (key == "--text")
+            {
+                textPath = GetArg(argc, argv, i);
+            }
+        }
+
+        if (configPath.empty() || inputPath.empty())
+        {
+            std::cerr << "Missing --config or --input\n";
+            return 1;
+        }
+
+        if (!LoadConfig(configPath, cfg))
+        {
+            std::cerr << "Failed to read config from " << configPath << "\n";
+            return 1;
+        }
+
+        std::vector<PacketRecord> packets;
+        if (!LoadPackets(inputPath, packets))
+        {
+            return 1;
+        }
+
+        auto result = Analyze(packets, cfg);
+
+        std::cout << "Packets analyzed: " << result.packetCount << "\n";
+        std::cout << "Incidents: " << result.incidents.size() << "\n";
+
+        if (command == "analyze")
+        {
+            if (jsonPath.empty() || textPath.empty())
+            {
+                std::cerr << "Missing --json or --text\n";
+                return 1;
+            }
+
+            if (!WriteJsonReport(jsonPath, result) || !WriteTextReport(textPath, result))
+            {
+                std::cerr << "Failed to write output reports\n";
+                return 1;
+            }
+
+            std::cout << "Wrote reports: " << jsonPath << " and " << textPath << "\n";
+        }
+        else
+        {
+            std::cout << "Top sources:\n";
+            for (const auto& source : TopN(result.sourceCount, 5))
+            {
+                std::cout << "  " << std::setw(18) << source.first << " : " << source.second << "\n";
+            }
+
+            std::cout << "Incident timeline:\n";
+            for (const auto& inc : result.incidents)
+            {
+                std::cout << "  [" << inc.timestampMs << "ms] " << inc.severity << " " << inc.attackType << "\n";
+                std::cout << "    Why: " << inc.why << "\n";
+                std::cout << "    Action: " << inc.action << "\n";
+            }
+        }
+
+        return 0;
+    }
+
+    PrintUsage();
+    return 1;
 }
